@@ -86,7 +86,8 @@ def addRow(tablename):
 
 @app.route("/getimage/<tablename>/<path>")
 def getimage(tablename, path):
-    maxdim = int(request.args.get("maxdim"))
+    maxdim = request.args.get("maxdim")
+    maxdim = 0 if maxdim is None else int(maxdim)
     datum = path.split("_")[2]  # 20200708
     yr = datum[0:4]
     mo = datum[4:6]
@@ -95,12 +96,13 @@ def getimage(tablename, path):
     img = Image.open(path)
     iw = img.width
     ih = img.height
-    xw = iw / maxdim
-    xh = ih / maxdim
-    x = xh if xw < xh else xw
-    w = int(iw / x)
-    h = int(ih / x)
-    img = img.resize(size=(w, h))
+    if maxdim != 0:
+        xw = iw / maxdim
+        xh = ih / maxdim
+        x = xh if xw < xh else xw
+        w = int(iw / x)
+        h = int(ih / x)
+        img = img.resize(size=(w, h))
     buf = io.BytesIO()
     img.save(buf, format="jpeg")
     resp = make_response(buf.getvalue())
@@ -132,3 +134,6 @@ def addimage(tablename, basename):
 if __name__ == "__main__":
     print("today", datetime.isoformat(datetime.now()))
     app.run(debug=True)
+
+
+# http://raspberrylan.1qgrvqjevtodmryr.myfritz.net:8080/
