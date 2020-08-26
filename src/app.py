@@ -8,6 +8,7 @@ from PIL import Image
 from flask import Flask, request, jsonify, json, url_for, make_response
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import MetaData
+from sqlalchemy.exc import IntegrityError
 
 MAX_IMAGE_SIZE = (10 * 1024 * 1024)
 
@@ -75,13 +76,35 @@ def tables():
 @app.route("/add/<tablename>", methods=['POST'])
 def addRow(tablename):
     print("addtab", tablename)
-    j = request.json
-    print("json", j)
+    jlist = request.json
+    print("json", jlist)
     dbtable = dbtables[tablename]
     ins = dbtable.insert()
     conn = db.engine.connect()
-    r = conn.execute(ins, j)
-    return "rows inserted into " + tablename + ": " + str(r.rowcount)
+
+    # try to achieve what sqlite does with "on conflict replace"
+    for retries in range(2):
+        try:
+            r = conn.execute(ins, jlist)
+            break
+        except IntegrityError as e:
+            if retries == 0:
+                nrRows = 0
+                for jrow in jlist:
+                    lat_round = jrow["lat_round"]
+                    lon_round = jrow["lon_round"]
+                    delStmt = db.text("DELETE FROM " + tablename +
+                                  " WHERE lat_round = :lat_round and lon_round = :lon_round")
+                    parms = {"lat_round": lat_round, "lon_round": lon_round}
+                    r = conn.execute(delStmt, parms)
+                    nrRows += r.rowcount
+                print("rows deleted from " + tablename + ": " + str(nrRows))
+                continue
+            else:
+                print("addRow exception", e)
+                raise(e)
+    print("rows inserted into " + tablename + ": " + str(r.rowcount))
+    return jsonify({tablename: r.rowcount})
 
 
 @app.route("/getimage/<tablename>/<path>")
