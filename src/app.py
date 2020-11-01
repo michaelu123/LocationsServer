@@ -44,9 +44,9 @@ dbtables = meta.tables
 def table(tablename):
     dbtable = dbtables[tablename]
     sel = dbtable.select()
-    conn = db.engine.connect()
-    r = conn.execute(sel)
-    rows = r.fetchall()
+    with db.engine.connect() as conn:
+        r = conn.execute(sel)
+        rows = r.fetchall()
     jj = jsonify([list(row) for row in rows])
     return jj
 
@@ -57,13 +57,13 @@ def region(tablename):
     maxlat = request.args.get("maxlat")
     minlon = request.args.get("minlon")
     maxlon = request.args.get("maxlon")
-    conn = db.engine.connect()
-    sel = db.text("SELECT * FROM " + tablename +
-                  " WHERE lat_round <= :maxlat and lat_round >= :minlat" +
-                  " and lon_round <= :maxlon and lon_round >= :minlon")
-    # print(sel)
-    parms = {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon}
-    rows = conn.execute(sel, parms)
+    with db.engine.connect() as conn:
+        sel = db.text("SELECT * FROM " + tablename +
+                      " WHERE lat_round <= :maxlat and lat_round >= :minlat" +
+                      " and lon_round <= :maxlon and lon_round >= :minlon")
+        # print(sel)
+        parms = {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon}
+        rows = conn.execute(sel, parms)
     jj = jsonify([list(row) for row in rows])
     return jj
 
@@ -80,53 +80,52 @@ def addRow(tablename):
     # print("json", jlist)
     dbtable = dbtables[tablename]
     ins = dbtable.insert()
-    conn = db.engine.connect()
-
-    # try to achieve what sqlite does with "on conflict replace"
-    for retries in range(2):
-        try:
-            r = conn.execute(ins, jlist)
-            break
-        except IntegrityError as e:
-            if retries == 0:
-                nrRows = 0
-                for jrow in jlist:
-                    if tablename.endswith("_daten"):
-                        # PRIMARY KEY(lat_round, lon_round)
-                        lat_round = jrow["lat_round"]
-                        lon_round = jrow["lon_round"]
-                        delStmt = db.text("DELETE FROM " + tablename +
-                                          " WHERE lat_round = :lat_round and lon_round = :lon_round")
-                        parms = {"lat_round": lat_round, "lon_round": lon_round}
-                    elif tablename.endswith("_images"):
-                        # PRIMARY KEY(image_path)
-                        image_path = jrow["image_path"]
-                        delStmt = db.text("DELETE FROM " + tablename +
-                                          " WHERE image_path = :image_path")
-                        parms = {"image_path": image_path}
-                    elif tablename.endswith("_zusatz"):
-                        # UNIQUE(creator, created, modified, lat_round, lon_round)
-                        creator = jrow["creator"]
-                        created = jrow["created"]
-                        modified = jrow["modified"]
-                        lat_round = jrow["lat_round"]
-                        lon_round = jrow["lon_round"]
-                        delStmt = db.text("DELETE FROM " + tablename +
-                                          " WHERE creator = :creator and created = :created and "
-                                          "modified = :modified and lat_round = :lat_round and lon_round = :lon_round")
-                        parms = {"creator": creator, "created": created, "modified": modified,
-                                 "lat_round": lat_round, "lon_round": lon_round}
-                    else:
-                        raise ValueError("Unbekannter Tabellenname " + tablename)
-                    r = conn.execute(delStmt, parms)
-                    nrRows += r.rowcount
-                print("rows deleted from " + tablename + ": " + str(nrRows))
-                continue
-            else:
-                print("addRow exception", e)
-                raise (e)
-    print("rows inserted into " + tablename + ": " + str(r.rowcount))
-    return jsonify({tablename: r.rowcount})
+    with db.engine.connect() as conn:
+        # try to achieve what sqlite does with "on conflict replace"
+        for retries in range(2):
+            try:
+                r = conn.execute(ins, jlist)
+                break
+            except IntegrityError as e:
+                if retries == 0:
+                    nrRows = 0
+                    for jrow in jlist:
+                        if tablename.endswith("_daten"):
+                            # PRIMARY KEY(lat_round, lon_round)
+                            lat_round = jrow["lat_round"]
+                            lon_round = jrow["lon_round"]
+                            delStmt = db.text("DELETE FROM " + tablename +
+                                              " WHERE lat_round = :lat_round and lon_round = :lon_round")
+                            parms = {"lat_round": lat_round, "lon_round": lon_round}
+                        elif tablename.endswith("_images"):
+                            # PRIMARY KEY(image_path)
+                            image_path = jrow["image_path"]
+                            delStmt = db.text("DELETE FROM " + tablename +
+                                              " WHERE image_path = :image_path")
+                            parms = {"image_path": image_path}
+                        elif tablename.endswith("_zusatz"):
+                            # UNIQUE(creator, created, modified, lat_round, lon_round)
+                            creator = jrow["creator"]
+                            created = jrow["created"]
+                            modified = jrow["modified"]
+                            lat_round = jrow["lat_round"]
+                            lon_round = jrow["lon_round"]
+                            delStmt = db.text("DELETE FROM " + tablename +
+                                              " WHERE creator = :creator and created = :created and "
+                                              "modified = :modified and lat_round = :lat_round and lon_round = :lon_round")
+                            parms = {"creator": creator, "created": created, "modified": modified,
+                                     "lat_round": lat_round, "lon_round": lon_round}
+                        else:
+                            raise ValueError("Unbekannter Tabellenname " + tablename)
+                        r = conn.execute(delStmt, parms)
+                        nrRows += r.rowcount
+                    print("rows deleted from " + tablename + ": " + str(nrRows))
+                    continue
+                else:
+                    print("addRow exception", e)
+                    raise (e)
+        print("rows inserted into " + tablename + ": " + str(r.rowcount))
+        return jsonify({tablename: r.rowcount})
 
 
 @app.route("/getimage/<tablename>/<path>")
