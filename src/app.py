@@ -92,11 +92,12 @@ def addRow(tablename):
                     for jrow in jlist:
                         if tablename.endswith("_daten"):
                             # PRIMARY KEY(lat_round, lon_round)
+                            creator = jrow["creator"]
                             lat_round = jrow["lat_round"]
                             lon_round = jrow["lon_round"]
                             delStmt = db.text("DELETE FROM " + tablename +
-                                              " WHERE lat_round = :lat_round and lon_round = :lon_round")
-                            parms = {"lat_round": lat_round, "lon_round": lon_round}
+                                              " WHERE creator = :creator and lat_round = :lat_round and lon_round = :lon_round")
+                            parms = {"creator": creator, "lat_round": lat_round, "lon_round": lon_round}
                         elif tablename.endswith("_images"):
                             # PRIMARY KEY(image_path)
                             image_path = jrow["image_path"]
