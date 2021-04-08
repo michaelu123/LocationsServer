@@ -10,7 +10,12 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import MetaData
 from sqlalchemy.exc import IntegrityError
 
+from . import config
+from . import utils
+from .mysqlCreateTables import MySqlCreateTables
+
 MAX_IMAGE_SIZE = (10 * 1024 * 1024)
+MAX_CONFIG_SIZE = (10 * 1024)
 
 
 class DecEncoder(json.JSONEncoder):
@@ -57,12 +62,14 @@ def region(tablename):
     maxlat = request.args.get("maxlat")
     minlon = request.args.get("minlon")
     maxlon = request.args.get("maxlon")
+    region = request.args.get("region")
     with db.engine.connect() as conn:
-        sel = db.text("SELECT * FROM " + tablename +
-                      " WHERE lat_round <= :maxlat and lat_round >= :minlat" +
-                      " and lon_round <= :maxlon and lon_round >= :minlon")
+        sel = "SELECT * FROM " + tablename + " WHERE lat_round <= :maxlat and lat_round >= :minlat and lon_round <= :maxlon and lon_round >= :minlon"
+        if region is not None and region != "":
+            sel += " and region = :region"
         # print(sel)
-        parms = {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon}
+        sel = db.text(sel)
+        parms = {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon, "region": region}
         rows = conn.execute(sel, parms)
     jj = jsonify([list(row) for row in rows])
     return jj
@@ -176,8 +183,45 @@ def addimage(tablename, basename):
     return jsonify({"url": imgurl})
 
 
+@app.route("/addconfig", methods=['POST'])
+def addconfig():
+    clen = request.content_length
+    if clen > MAX_CONFIG_SIZE:
+        resp = jsonify({"error": "config file too large"})
+        resp.status_code = 400
+        return resp
+    baseConfig = config.Config()
+    data = request.get_data(cache=False)
+    confJS = baseConfig.addConfig(io.BytesIO(data))
+    if confJS is None:
+        return jsonify("Error", baseConfig.errors)
+    name = utils.normalize(confJS["name"])
+    if name is None or name == "" or len(name) > 100:
+        return jsonify("Error", "invalid name:" + name)
+    path = os.path.join("config", name + ".json")
+    if os.path.exists(path):
+        return jsonify("Error", "File " + name + ".json already exists")
+    db = MySqlCreateTables()
+    db.initDB(confJS)
+    with open(path, mode='wb', encoding="UTF-8") as configFile:
+        configFile.write(data)
+    return jsonify({"name": name})
+
+
+@app.route("/configs")
+def getConfigs():
+    return jsonify(sorted(os.listdir("config")))
+
+
+@app.route("/config/<name>")
+def getConfig(name):
+    path = os.path.join("config", name)
+    with open(path, "r", encoding="UTF-8") as jsonFile:
+        return json.load(jsonFile)
+
+
 if __name__ == "__main__":
     print("today", datetime.isoformat(datetime.now()))
-    app.run(debug=True)
+    app.run(debug=True, use_reloader=False, host="0.0.0.0")
 
 # http://raspberrylan.1qgrvqjevtodmryr.myfritz.net:8080/

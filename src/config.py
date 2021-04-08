@@ -100,6 +100,10 @@ syntax = \
                             "required": False,
                             "type": "array",
                             "elem": "string"
+                        },
+                        "required": {
+                            "required": False,
+                            "type": "bool"
                         }
                     }
                 }
@@ -143,6 +147,10 @@ syntax = \
                             "required": False,
                             "type": "array",
                             "elem": "string"
+                        },
+                        "required": {
+                            "required": False,
+                            "type": "bool"
                         }
                     }
                 }
@@ -173,6 +181,19 @@ class Config():
                         print("gelesen:", f, nm)
                 except Exception as e:
                     utils.printEx("Fehler beim Lesen von " + f, e)
+
+
+    def addConfig(self, data):
+        confJS = json.load(data)
+        try:
+            self.checkSyntax(confJS, syntax)
+        except Exception as e:
+            utils.printEx("Kann neue Config-Daten nicht parsen:", e)
+            self.errors.append("Kann neue Config-Daten nicht parsen:" + str(e))
+            return None
+        nm = confJS.get("name")
+        self.configs[nm] = confJS
+        return confJS
 
     def getGPSArea(self, name):
         gps = self.configs[name].get("gps")
@@ -224,7 +245,7 @@ class Config():
         elif syntype == "auswahl":
             auswahl = syn.get("auswahl")
             if auswahl and js not in auswahl:
-                raise ValueError(js + " nicht enthalten in der Auswahl " + auswahl)
+                raise ValueError(js + " nicht enthalten in der Auswahl " + str(auswahl))
         elif syntype == "array":
             if not isinstance(js, list):
                 raise (ValueError("Das Feld " + key + " hat den Typ " + str(

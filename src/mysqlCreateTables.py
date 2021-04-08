@@ -1,8 +1,9 @@
 import locale
 
-import config
 import mysql.connector
 import utils
+
+from . import config
 
 """
 Call this once, manually, to create tables on the raspberry mysql db
@@ -41,18 +42,17 @@ class MySqlCreateTables:
                 return None
         return mydb
 
-    def initDB(self, app):
-        self.app = app
-        self.baseJS = app.baseJS
+    def initDB(self, baseJS):
+        self.baseJS = baseJS
         self.aliasname = None
         self.tabellenname = self.baseJS.get("db_tabellenname")
         self.stellen = self.baseJS.get("gps").get("nachkommastellen")
         self.colnames = {}
         db = utils.getDataDir() + "/" + self.baseJS.get("db_name")
 
-        colnames = ["creator", "created", "modified", "lat", "lon", "lat_round", "lon_round"]
+        colnames = ["creator", "created", "modified", "region", "lat", "lon", "lat_round", "lon_round"]
         fields = ["creator VARCHAR(40) NOT NULL", "created DATETIME NOT NULL", "modified DATETIME NOT NULL",
-                  "lat DOUBLE NOT NULL", "lon DOUBLE NOT NULL",
+                  "region VARCHAR(20)", "lat DOUBLE NOT NULL", "lon DOUBLE NOT NULL",
                   "lat_round VARCHAR(20) NOT NULL", "lon_round VARCHAR(20) NOT NULL"]
         for feld in self.baseJS.get("daten").get("felder"):
             name = feld.get("name")
@@ -69,25 +69,25 @@ class MySqlCreateTables:
         c.execute(stmt2)
         self.colnames["daten"] = colnames
 
-        fields = ["creator VARCHAR(40) NOT NULL", "created DATETIME NOT NULL",
+        fields = ["creator VARCHAR(40) NOT NULL", "created DATETIME NOT NULL", "region VARCHAR(20)",
                   "lat DOUBLE NOT NULL", "lon DOUBLE NOT NULL",
                   "lat_round VARCHAR(20) NOT NULL", "lon_round VARCHAR(20) NOT NULL",
-                  "image_path VARCHAR(256)", "image_url VARCHAR(256)",
+                  "image_path VARCHAR(256)", "image_url VARCHAR(256)", "bemerkung VARCHAR(256)",
                   "PRIMARY KEY (image_path)"]
         stmt1 = "CREATE TABLE IF NOT EXISTS " + self.tabellenname + "_images (" + ", ".join(fields) + ")"
         stmt2 = "CREATE INDEX IF NOT EXISTS latlonrnd_images ON " + self.tabellenname + "_images (lat_round, lon_round)";
         c = conn.cursor()
         c.execute(stmt1)
         c.execute(stmt2)
-        self.colnames["images"] = ["creator", "created", "lat", "lon", "lat_round", "lon_round", "image_path",
-                                   "image_url"]
+        self.colnames["images"] = ["creator", "created", "region", "lat", "lon", "lat_round", "lon_round", "image_path",
+                                   "image_url", "bemerkung"]
 
         if self.baseJS.get("zusatz", None) is None:
             return
-        colnames = ["nr", "creator", "created", "modified", "lat", "lon", "lat_round", "lon_round"]
-        fields = ["nr INTEGER PRIMARY KEY",
+        colnames = ["nr", "creator", "created", "modified", "region", "lat", "lon", "lat_round", "lon_round"]
+        fields = ["nr INTEGER PRIMARY KEY AUTO_INCREMENT",
                   "creator VARCHAR(40) NOT NULL", "created DATETIME NOT NULL", "modified DATETIME NOT NULL",
-                  "lat DOUBLE NOT NULL", "lon DOUBLE NOT NULL",
+                  "region VARCHAR(20)", "lat DOUBLE NOT NULL", "lon DOUBLE NOT NULL",
                   "lat_round VARCHAR(20) NOT NULL", "lon_round VARCHAR(20) NOT NULL"]
         for feld in self.baseJS.get("zusatz").get("felder"):
             name = feld.get("name")
@@ -106,9 +106,7 @@ class MySqlCreateTables:
 
 class App:
     def __init__(self):
-        self.selected_base = "Abstellplätze"
         self.baseConfig = config.Config()
-        self.baseJS = self.baseConfig.getBase(self.selected_base)
 
 
 if __name__ == "__main__":
@@ -119,4 +117,6 @@ if __name__ == "__main__":
         utils.printEx("setlocale", e)
     app = App()
     db = MySqlCreateTables()
-    db.initDB(app)
+    for name in []: # ["Abstellanlagen", "Abstellplätze", "Alte Bäume", "Nistkästen", "Sitzbänke"]:
+        baseJS = app.baseConfig.getBase(name)
+        db.initDB(baseJS)
