@@ -2,16 +2,9 @@
   "name": "Alte Bäume",
   "db_name": "Altebäume.db",
   "db_tabellenname": "altebäume",
-  "spreadsheet_id": "1bo0h8Ctos6pMXCeRCkSrleaN2Kzpjzhq61iVLcX6RQ0",
-  "shareToken": "AOVP0rSx8wXLOvvyvHRkp3r1MFkf6QI7uYdc3Z3x9doPp3Tz09tblryWfBkwBZCJDc2g7z0HXt7Kbq4yT60oSvNCKMyW-in-uGlEQwhe8sAnjW3OvIc1810oJMwktG6QJAM",
+  "version": 1,
   "protected": false,
   "gps": {
-    "min_lat": 48.0,
-    "max_lat": 48.25,
-    "min_lon": 11.4,
-    "max_lon": 11.8,
-    "center_lat": 48.137235,
-    "center_lon": 11.57554,
     "nachkommastellen": 5,
     "min_zoom": 11
   },

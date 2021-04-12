@@ -2,13 +2,8 @@
   "name": "Nistkästen",
   "db_name": "Nistkästen.db",
   "db_tabellenname": "nistkästen",
+  "version": 1,
   "gps": {
-    "min_lat": 48.0,
-    "max_lat": 48.25,
-    "min_lon": 11.4,
-    "max_lon": 11.8,
-    "center_lat": 48.137235,
-    "center_lon": 11.57554,
     "nachkommastellen": 5,
     "min_zoom": 11
   },

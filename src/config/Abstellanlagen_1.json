@@ -2,16 +2,9 @@
   "name": "Abstellanlagen",
   "db_name": "Abstellanlagen.db",
   "db_tabellenname": "abstellanlagen",
-  "spreadsheet_id": "1ULqk5oKgA78pprCupGxApRKTHDTl9fJzECXYEO4QXJ8",
-  "shareToken": "AOVP0rQZIEqQOiIUX3O86yxslicTgrKTPZqJI38QuPJkss9_FWn2MrXN4DnB0Ne1B36BPWG3uL6uaABf0dTd2ns0PrgTy_xolYIe0OFCJdxZPg4FPWXiwEifK1eHXekQd0I",
+  "version": 1,
   "protected": false,
   "gps": {
-    "min_lat": 48.0,
-    "max_lat": 48.25,
-    "min_lon": 11.4,
-    "max_lon": 11.8,
-    "center_lat": 48.137235,
-    "center_lon": 11.57554,
     "nachkommastellen": 5,
     "min_zoom": 11
   },
