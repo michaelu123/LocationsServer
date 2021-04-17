@@ -10,9 +10,10 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import MetaData
 from sqlalchemy.exc import IntegrityError
 
-from . import config
-from . import utils
-from .mysqlCreateTables import MySqlCreateTables
+import config
+import utils
+import secrets
+from mysqlCreateTables import MySqlCreateTables
 
 MAX_IMAGE_SIZE = (10 * 1024 * 1024)
 MAX_CONFIG_SIZE = (10 * 1024)
@@ -29,7 +30,7 @@ class DecEncoder(json.JSONEncoder):
 
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://testuser:xxx123@raspberrylan/locationsdb'
+app.config['SQLALCHEMY_DATABASE_URI'] = secrets.dburl
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 app.json_encoder = DecEncoder
@@ -64,7 +65,8 @@ def region(tablename):
     maxlon = request.args.get("maxlon")
     region = request.args.get("region")
     with db.engine.connect() as conn:
-        sel = "SELECT * FROM " + tablename + " WHERE lat_round <= :maxlat and lat_round >= :minlat and lon_round <= :maxlon and lon_round >= :minlon"
+        sel = "SELECT * FROM " + tablename + \
+              " WHERE lat_round <= :maxlat and lat_round >= :minlat and lon_round <= :maxlon and lon_round >= :minlon"
         if region is not None and region != "":
             sel += " and region = :region"
         # print(sel)
@@ -103,7 +105,8 @@ def addRow(tablename):
                             lat_round = jrow["lat_round"]
                             lon_round = jrow["lon_round"]
                             delStmt = db.text("DELETE FROM " + tablename +
-                                              " WHERE creator = :creator and lat_round = :lat_round and lon_round = :lon_round")
+                                              "WHERE creator = :creator and lat_round = :lat_round and lon_round = "
+                                              ":lon_round")
                             parms = {"creator": creator, "lat_round": lat_round, "lon_round": lon_round}
                         elif tablename.endswith("_images"):
                             # PRIMARY KEY(image_path)
@@ -120,7 +123,8 @@ def addRow(tablename):
                             lon_round = jrow["lon_round"]
                             delStmt = db.text("DELETE FROM " + tablename +
                                               " WHERE creator = :creator and created = :created and "
-                                              "modified = :modified and lat_round = :lat_round and lon_round = :lon_round")
+                                              "modified = :modified and lat_round = :lat_round and lon_round = "
+                                              ":lon_round")
                             parms = {"creator": creator, "created": created, "modified": modified,
                                      "lat_round": lat_round, "lon_round": lon_round}
                         else:
@@ -192,19 +196,21 @@ def addconfig():
         return resp
     baseConfig = config.Config()
     data = request.get_data(cache=False)
-    confJS = baseConfig.addConfig(io.BytesIO(data))
+    confJS = baseConfig.checkConfig(io.BytesIO(data))
     if confJS is None:
         return jsonify("Error", baseConfig.errors)
     name = utils.normalize(confJS["name"])
     if name is None or name == "" or len(name) > 100:
         return jsonify("Error", "invalid name:" + name)
-    path = os.path.join("config", name + ".json")
+    nameVers = name + "_" + str(confJS["version"])
+    path = os.path.join("config", nameVers + ".json")
     if os.path.exists(path):
-        return jsonify("Error", "File " + name + ".json already exists")
+        return jsonify("Error", "File " + nameVers + ".json already exists")
     db = MySqlCreateTables()
-    db.initDB(confJS)
-    with open(path, mode='wb', encoding="UTF-8") as configFile:
+    db.updateDB(confJS, baseConfig.getBaseVersions(name))
+    with open(path, mode='wb') as configFile:
         configFile.write(data)
+    baseConfig.addConfig(confJS)
     return jsonify({"name": name})
 
 

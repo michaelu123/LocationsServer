@@ -3,7 +3,8 @@ import locale
 import mysql.connector
 import utils
 
-from . import config
+import config
+import secrets
 
 """
 Call this once, manually, to create tables on the raspberry mysql db
@@ -19,7 +20,7 @@ sqtype = {"int": "INT", "bool": "TINYINT", "prozent": "TINYINT", "string": "VARC
 class MySqlCreateTables:
     def getConn(self):
         try:
-            mydb = mysql.connector.connect(user='creator', password='xxx123',
+            mydb = mysql.connector.connect(user='creator', password=secrets.creator_password,
                                            host='raspberrylan', database='locationsdb')
         except mysql.connector.Error as err:
             try:
@@ -36,19 +37,14 @@ class MySqlCreateTables:
                 # mycursor.execute("GRANT SELECT,INSERT,UPDATE,DELETE ON " + self.tabellenname + ".* TO 'locationsuser'@'%'")
                 mydb.close()
                 mydb = mysql.connector.connect(user='creator', password='xxx123',
-                                               host='raspberrylan', database=self.tabellenname)
+                                               host='raspberrylan', database='locationsdb') # ?? self.tabellenname??
             except mysql.connector.Error as err:
                 print(err)
                 return None
         return mydb
 
     def initDB(self, baseJS):
-        self.baseJS = baseJS
-        self.aliasname = None
-        self.tabellenname = self.baseJS.get("db_tabellenname")
-        self.stellen = self.baseJS.get("gps").get("nachkommastellen")
         self.colnames = {}
-        db = utils.getDataDir() + "/" + self.baseJS.get("db_name")
 
         colnames = ["creator", "created", "modified", "region", "lat", "lon", "lat_round", "lon_round"]
         fields = ["creator VARCHAR(40) NOT NULL", "created DATETIME NOT NULL", "modified DATETIME NOT NULL",
@@ -97,12 +93,101 @@ class MySqlCreateTables:
         fields.append("UNIQUE(creator, created, modified, lat_round, lon_round)")
         stmt1 = "CREATE TABLE IF NOT EXISTS " + self.tabellenname + "_zusatz (" + ", ".join(fields) + ")"
         stmt2 = "CREATE INDEX IF NOT EXISTS latlonrnd_zusatz ON " + self.tabellenname + "_zusatz (lat_round, lon_round)";
-
         c = conn.cursor()
         c.execute(stmt1)
         c.execute(stmt2)
         self.colnames["zusatz"] = colnames
 
+        stmt = "CREATE TABLE IF NOT EXISTS versions (tablename VARCHAR(100), version INT)"
+        c = conn.cursor()
+        c.execute(stmt)
+        stmt = "INSERT INTO versions (tablename, version) VALUES(%(tablename)s, %(version)s)"
+        c.execute(stmt, {'tablename': self.tabellenname, 'version': baseJS["version"]})
+        conn.commit()
+
+    def updateDB(self, baseJS, configs ):
+        self.baseJS = baseJS
+        self.tabellenname = self.baseJS.get("db_tabellenname")
+        bcVers = baseJS["version"];
+        dbVers = self.dbVersion()
+        if dbVers == 0: # a new table
+            self.initDB(baseJS)
+            return
+        if bcVers > dbVers:
+            self.updateFields(bcVers, dbVers, baseJS, configs);
+
+
+    def dbVersion(self):
+        conn = self.getConn()
+        c = conn.cursor()
+        stmt = "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'locationsdb' AND table_name = %s"
+        c.execute(stmt, [self.tabellenname + "_daten"])
+        val = c.fetchone()
+        if val[0] == 0:
+            return 0
+        try:
+            stmt = "SELECT max(version) FROM versions WHERE tablename = %s"
+            c.execute(stmt,[self.tabellenname])
+            val = c.fetchone()
+            return 1 if val is None else val[0]
+        except Exception as err:
+            pass
+        return 1
+
+    def updateFields(self, bcVers, dbVers, baseJS, configs):
+        dbConfigArr = [c for c in configs if c["version"] == dbVers]
+        if len(dbConfigArr) == 0:
+            raise Exception("no config file " + self.tabellenname + "_" + str(dbVers) + " found")
+        dbConfig = dbConfigArr[0]
+        diffs = self.getDiffs(baseJS, dbConfig)
+        (addedDaten, removedDaten, addedZusatz, removedZusatz) = diffs
+        self.addFields(addedDaten, "_daten")
+        self.removeFields(removedDaten, "_daten")
+        self.addFields(addedZusatz, "_zusatz")
+        self.removeFields(removedZusatz, "_zusatz")
+        stmt = "UPDATE versions SET version=%(version)s WHERE tablename = %(tablename)s"
+        conn = self.getConn()
+        c = conn.cursor()
+        c.execute(stmt, {'tablename': self.tabellenname, 'version': bcVers})
+        conn.commit()
+        pass
+
+    def getDiffs(self, newJS, oldJS):
+        addedDaten = self.inAnotB(newJS["daten"], oldJS["daten"])
+        removedDaten = self.inAnotB(oldJS["daten"],newJS["daten"])
+        addedZusatz = self.inAnotB(newJS["zusatz"], oldJS["zusatz"])
+        removedZusatz = self.inAnotB(oldJS["zusatz"],newJS["zusatz"])
+        return (addedDaten, removedDaten, addedZusatz, removedZusatz)
+
+    def inAnotB(self, a, b):
+        l = []
+        la = a["felder"]
+        lb = b["felder"]
+        for am in la:
+            found = False
+            for bm in lb:
+                if am["name"] == bm["name"]:
+                    found = True
+                    break
+            if not found:
+                l.append(am)
+        return l
+
+    def addFields(self, addedFields, suffix):
+        conn = self.getConn()
+        c = conn.cursor()
+        for feld in addedFields:
+            stmt = "ALTER TABLE " + self.tabellenname + suffix + " ADD " + feld["name"] + " " + sqtype[feld["type"]]
+            c.execute(stmt)
+        conn.commit()
+
+    def removeFields(self, removedFields, suffix):
+        conn = self.getConn()
+        c = conn.cursor()
+        for feld in removedFields:
+            stmt = "ALTER TABLE " + self.tabellenname + suffix + " DROP " + feld["name"]
+            c.execute(stmt)
+        conn.commit()
 
 class App:
     def __init__(self):
@@ -118,5 +203,11 @@ if __name__ == "__main__":
     app = App()
     db = MySqlCreateTables()
     for name in []: # ["Abstellanlagen", "Abstellplätze", "Alte Bäume", "Nistkästen", "Sitzbänke"]:
-        baseJS = app.baseConfig.getBase(name)
+        baseJSVersions = app.baseConfig.getBaseVersions(name)
+        baseJS = baseJSVersions[0]
+        vers = baseJS["version"]
+        for bv in baseJSVersions[1:]:
+            if bv["version"] > vers:
+                baseJS = bv
+                vers = bv["version"]
         db.initDB(baseJS)

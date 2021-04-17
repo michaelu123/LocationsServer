@@ -17,10 +17,6 @@ syntax = \
             "required": True,
             "type": "string"
         },
-        "spreadsheet_id": {
-            "required": True,
-            "type": "string"
-        },
         "protected": {
             "required": False,
             "type": "bool"
@@ -28,30 +24,6 @@ syntax = \
         "gps": {
             "required": True,
             "type": {
-                "min_lat": {
-                    "required": True,
-                    "type": "float"
-                },
-                "max_lat": {
-                    "required": True,
-                    "type": "float"
-                },
-                "min_lon": {
-                    "required": True,
-                    "type": "float"
-                },
-                "max_lon": {
-                    "required": True,
-                    "type": "float"
-                },
-                "center_lat": {
-                    "required": True,
-                    "type": "float"
-                },
-                "center_lon": {
-                    "required": True,
-                    "type": "float"
-                },
                 "nachkommastellen": {
                     "required": True,
                     "type": "int"
@@ -177,13 +149,17 @@ class Config():
                             self.errors.append("Kann Datei " + f + " nicht parsen:" + str(e))
                             continue
                         nm = confJS.get("name")
-                        self.configs[nm] = confJS
+                        l = self.configs.get(nm)
+                        if l is None:
+                            l = []
+                            self.configs[nm] = l
+                        l.append(confJS)
                         print("gelesen:", f, nm)
                 except Exception as e:
                     utils.printEx("Fehler beim Lesen von " + f, e)
 
 
-    def addConfig(self, data):
+    def checkConfig(self, data):
         confJS = json.load(data)
         try:
             self.checkSyntax(confJS, syntax)
@@ -191,29 +167,23 @@ class Config():
             utils.printEx("Kann neue Config-Daten nicht parsen:", e)
             self.errors.append("Kann neue Config-Daten nicht parsen:" + str(e))
             return None
-        nm = confJS.get("name")
-        self.configs[nm] = confJS
         return confJS
 
-    def getGPSArea(self, name):
-        gps = self.configs[name].get("gps")
-        # (11.4, 48.0, 11.8, 48.25) = München
-        return (gps.get("min_lon"), gps.get("min_lat"), gps.get("max_lon"), gps.get("max_lat"))
+
+    def addConfig(self, confJS):
+        nm = confJS.get("name")
+        l = self.configs.get(nm)
+        if l is None:
+            l = []
+            self.configs[nm] = l
+        l.append(confJS)
+
 
     def getNames(self):
         return list(self.configs.keys())
 
-    def getMinZoom(self, name):
-        gps = self.configs[name].get("gps")
-        return gps.get("min_zoom")
-
-    def getBase(self, name):
-        return self.configs[name]
-
-        self.stellen = self.baseJS.get("gps").get("nachkommastellen")
-        gps = self.baseJS.get("gps")
-        lat = gps.get("center_lat")
-        lon = gps.get("center_lon")
+    def getBaseVersions(self, name):
+        return self.configs.get(name,  [])
 
     def checkSyntax(self, js, syn):
         for synkey in syn.keys():
