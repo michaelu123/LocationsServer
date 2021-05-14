@@ -84,7 +84,7 @@ def tables():
 
 @app.route("/add/<tablename>", methods=['POST'])
 def addRow(tablename):
-    # print("addtab", tablename)
+    # print("addRow", tablename)
     jlist = request.json
     # print("json", jlist)
     dbtable = dbtables[tablename]
@@ -105,7 +105,7 @@ def addRow(tablename):
                             lat_round = jrow["lat_round"]
                             lon_round = jrow["lon_round"]
                             delStmt = db.text("DELETE FROM " + tablename +
-                                              "WHERE creator = :creator and lat_round = :lat_round and lon_round = "
+                                              " WHERE creator = :creator and lat_round = :lat_round and lon_round = "
                                               ":lon_round")
                             parms = {"creator": creator, "lat_round": lat_round, "lon_round": lon_round}
                         elif tablename.endswith("_images"):
@@ -115,18 +115,26 @@ def addRow(tablename):
                                               " WHERE image_path = :image_path")
                             parms = {"image_path": image_path}
                         elif tablename.endswith("_zusatz"):
-                            # UNIQUE(creator, created, modified, lat_round, lon_round)
-                            creator = jrow["creator"]
-                            created = jrow["created"]
-                            modified = jrow["modified"]
-                            lat_round = jrow["lat_round"]
-                            lon_round = jrow["lon_round"]
-                            delStmt = db.text("DELETE FROM " + tablename +
-                                              " WHERE creator = :creator and created = :created and "
-                                              "modified = :modified and lat_round = :lat_round and lon_round = "
-                                              ":lon_round")
-                            parms = {"creator": creator, "created": created, "modified": modified,
-                                     "lat_round": lat_round, "lon_round": lon_round}
+                            err = str(e)
+                            if err.index("'PRIMARY'") > 0:
+                                # primary key pk
+                                nr = jrow["nr"]
+                                delStmt = db.text("DELETE FROM " + tablename +
+                                                  " WHERE nr = :nr")
+                                parms = {"nr": nr}
+                            else:
+                                # UNIQUE(creator, created, modified, lat_round, lon_round)
+                                creator = jrow["creator"]
+                                created = jrow["created"]
+                                modified = jrow["modified"]
+                                lat_round = jrow["lat_round"]
+                                lon_round = jrow["lon_round"]
+                                delStmt = db.text("DELETE FROM " + tablename +
+                                                  " WHERE creator = :creator and created = :created and "
+                                                  "modified = :modified and lat_round = :lat_round and lon_round = "
+                                                  ":lon_round")
+                                parms = {"creator": creator, "created": created, "modified": modified,
+                                         "lat_round": lat_round, "lon_round": lon_round}
                         else:
                             raise ValueError("Unbekannter Tabellenname " + tablename)
                         r = conn.execute(delStmt, parms)
@@ -137,18 +145,57 @@ def addRow(tablename):
                     print("addRow exception", e)
                     raise (e)
         print("rows inserted into " + tablename + ": " + str(r.rowcount))
-        return jsonify({tablename: r.rowcount})
+        return jsonify({tablename: r.rowcount, "rowid": r.lastrowid })
 
+@app.route("/official/<tablename>", methods=['POST'])
+def official(tablename):
+    print("official", tablename)
+    jrow = request.json
+    print("json", jrow)
+    dbtable = dbtables[tablename]
+    ins = dbtable.insert()
+    with db.engine.begin() as conn:
+        lat_round = jrow["lat_round"]
+        lon_round = jrow["lon_round"]
+        delStmt = db.text("DELETE FROM " + tablename +
+                          " WHERE lat_round = :lat_round and lon_round = :lon_round")
+        parms = {"lat_round": lat_round, "lon_round": lon_round}
+        r = conn.execute(delStmt, parms)
+        print("official deleted " + str(r.rowcount))
+        ins = dbtable.insert()
+        r = conn.execute(ins, jrow)
+        print("official inserted " + str(r.rowcount))
+    return jsonify({tablename: r.rowcount})
 
-@app.route("/getimage/<tablename>/<path>")
-def getimage(tablename, path):
+@app.route("/deleteloc/<tablebase>", methods=['DELETE'])
+def deleteloc(tablebase):
+    res = {}
+    hasZusatz = request.args.get("haszusatz") == "true"
+    lat_round = request.args.get("lat")
+    lon_round = request.args.get("lon")
+    tables = ["daten", "images"]
+    if hasZusatz:
+        tables.append("zusatz")
+    with db.engine.begin() as conn:
+        for table in tables:
+            delStmt = db.text("DELETE FROM " + tablebase + "_" + table +
+                          " WHERE lat_round = :lat_round and lon_round = :lon_round")
+            parms = {"lat_round": lat_round, "lon_round": lon_round}
+            r = conn.execute(delStmt, parms)
+            res[table] = r.rowcount
+    return jsonify(res)
+
+@app.route("/getimage/<tablebase>/<path>")
+def getimage(tablebase, path):
+    if tablebase.endswith("_images"):
+        tablebase = tablebase[0:-7]
     maxdim = request.args.get("maxdim")
     maxdim = 0 if maxdim is None else int(maxdim)
     datum = path.split("_")[2]  # 20200708
     yr = datum[0:4]
     mo = datum[4:6]
     dy = datum[6:8]
-    path = os.path.join("images", yr, mo, dy, path)
+    path = os.path.join("images", tablebase, yr, mo, dy, path)
     img = Image.open(path)
     iw = img.width
     ih = img.height
@@ -165,25 +212,39 @@ def getimage(tablename, path):
     resp.mimetype = "image/jpeg"
     return resp
 
+@app.route("/deleteimage/<tablebase>/<path>")
+def deleteimage(tablebase, path):
+    if tablebase.endswith("_images"):
+        tablebase = tablebase[0:-7]
+    datum = path.split("_")[2]  # 20200708
+    yr = datum[0:4]
+    mo = datum[4:6]
+    dy = datum[6:8]
+    path = os.path.join("images", tablebase, yr, mo, dy, path)
+    os.remove(path)
+    return jsonify({})
 
-@app.route("/addimage/<tablename>/<basename>", methods=['POST'])
-def addimage(tablename, basename):
+
+@app.route("/addimage/<tablebase>/<imgname>", methods=['POST'])
+def addimage(tablebase, imgname):
+    if tablebase.endswith("_images"):
+        tablebase = tablebase[0:-7]
     clen = request.content_length
     if clen > MAX_IMAGE_SIZE:
         resp = jsonify({"error": "image too large"})
         resp.status_code = 400
         return resp
-    datum = basename.split("_")[2]  # 20200708
+    datum = imgname.split("_")[2]  # 20200708
     yr = datum[0:4]
     mo = datum[4:6]
     dy = datum[6:8]
     data = request.get_data(cache=False)
-    path = os.path.join("images", yr, mo, dy)
+    path = os.path.join("images", tablebase, yr, mo, dy)
     os.makedirs(path, exist_ok=True)
-    path = os.path.join(path, basename)
+    path = os.path.join(path, imgname)
     with open(path, mode='wb') as imgfile:
         imgfile.write(data)
-    imgurl = request.url_root[0:-1] + url_for('getimage', tablename=tablename, path=basename)
+    imgurl = request.url_root[0:-1] + url_for('getimage', tablebase=tablebase, path=path)
     return jsonify({"url": imgurl})
 
 
@@ -205,7 +266,7 @@ def addconfig():
     nameVers = name + "_" + str(confJS["version"])
     path = os.path.join("config", nameVers + ".json")
     if os.path.exists(path):
-        return jsonify("Error", "File " + nameVers + ".json already exists")
+        return jsonify("Error", "File " + os.path.abspath(path) + " already exists")
     db = MySqlCreateTables()
     db.updateDB(confJS, baseConfig.getBaseVersions(name))
     with open(path, mode='wb') as configFile:

@@ -21,7 +21,7 @@ class MySqlCreateTables:
     def getConn(self):
         try:
             mydb = mysql.connector.connect(user='creator', password=secrets.creator_password,
-                                           host='raspberrylan', database='locationsdb')
+                                           host=secrets.dbhost, database='locationsdb')
         except mysql.connector.Error as err:
             try:
                 mydb = mysql.connector.connect(user='creator', password='xxx123',
@@ -98,13 +98,6 @@ class MySqlCreateTables:
         c.execute(stmt2)
         self.colnames["zusatz"] = colnames
 
-        stmt = "CREATE TABLE IF NOT EXISTS versions (tablename VARCHAR(100), version INT)"
-        c = conn.cursor()
-        c.execute(stmt)
-        stmt = "INSERT INTO versions (tablename, version) VALUES(%(tablename)s, %(version)s)"
-        c.execute(stmt, {'tablename': self.tabellenname, 'version': baseJS["version"]})
-        conn.commit()
-
     def updateDB(self, baseJS, configs ):
         self.baseJS = baseJS
         self.tabellenname = self.baseJS.get("db_tabellenname")
@@ -112,9 +105,16 @@ class MySqlCreateTables:
         dbVers = self.dbVersion()
         if dbVers == 0: # a new table
             self.initDB(baseJS)
+            stmt = "CREATE TABLE IF NOT EXISTS versions (tablename VARCHAR(100), version INT)"
+            conn = self.getConn()
+            c = conn.cursor()
+            c.execute(stmt)
+            stmt = "INSERT INTO versions (tablename, version) VALUES(%(tablename)s, %(version)s)"
+            c.execute(stmt, {'tablename': self.tabellenname, 'version': baseJS["version"]})
+            conn.commit()
             return
         if bcVers > dbVers:
-            self.updateFields(bcVers, dbVers, baseJS, configs);
+            self.updateFields(bcVers, dbVers, configs);
 
 
     def dbVersion(self):
@@ -129,17 +129,17 @@ class MySqlCreateTables:
             stmt = "SELECT max(version) FROM versions WHERE tablename = %s"
             c.execute(stmt,[self.tabellenname])
             val = c.fetchone()
-            return 1 if val is None else val[0]
+            return 1 if val is None or val[0] is None else val[0]
         except Exception as err:
             pass
         return 1
 
-    def updateFields(self, bcVers, dbVers, baseJS, configs):
+    def updateFields(self, bcVers, dbVers, configs):
         dbConfigArr = [c for c in configs if c["version"] == dbVers]
         if len(dbConfigArr) == 0:
             raise Exception("no config file " + self.tabellenname + "_" + str(dbVers) + " found")
         dbConfig = dbConfigArr[0]
-        diffs = self.getDiffs(baseJS, dbConfig)
+        diffs = self.getDiffs(dbConfig)
         (addedDaten, removedDaten, addedZusatz, removedZusatz) = diffs
         self.addFields(addedDaten, "_daten")
         self.removeFields(removedDaten, "_daten")
@@ -152,17 +152,18 @@ class MySqlCreateTables:
         conn.commit()
         pass
 
-    def getDiffs(self, newJS, oldJS):
+    def getDiffs(self, oldJS):
+        newJS = self.baseJS
         addedDaten = self.inAnotB(newJS["daten"], oldJS["daten"])
         removedDaten = self.inAnotB(oldJS["daten"],newJS["daten"])
-        addedZusatz = self.inAnotB(newJS["zusatz"], oldJS["zusatz"])
-        removedZusatz = self.inAnotB(oldJS["zusatz"],newJS["zusatz"])
+        addedZusatz = self.inAnotB(newJS.get("zusatz"), oldJS.get("zusatz"))
+        removedZusatz = self.inAnotB(oldJS.get("zusatz"),newJS.get("zusatz"))
         return (addedDaten, removedDaten, addedZusatz, removedZusatz)
 
     def inAnotB(self, a, b):
         l = []
-        la = a["felder"]
-        lb = b["felder"]
+        la = [] if a is None else a["felder"]
+        lb = [] if b is None else b["felder"]
         for am in la:
             found = False
             for bm in lb:
@@ -173,11 +174,26 @@ class MySqlCreateTables:
                 l.append(am)
         return l
 
+
+    def fieldBefore(self, name, suffix):
+        felder = self.baseJS.get(suffix)
+        if felder is None:
+            return ""
+        for (i,f) in enumerate(felder):
+            if f["name"] == name:
+                if i == 0:
+                    return " FIRST"
+                return " AFTER " + felder[i-1]["name"]
+        return ""
+
+
     def addFields(self, addedFields, suffix):
         conn = self.getConn()
         c = conn.cursor()
         for feld in addedFields:
-            stmt = "ALTER TABLE " + self.tabellenname + suffix + " ADD " + feld["name"] + " " + sqtype[feld["type"]]
+            stmt = "ALTER TABLE " + self.tabellenname + suffix + " ADD " +\
+                   feld["name"] + " " + sqtype[feld["type"]] +\
+                   self.fieldBefore(feld["name"], suffix[1:])
             c.execute(stmt)
         conn.commit()
 
