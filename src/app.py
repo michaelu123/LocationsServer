@@ -212,7 +212,7 @@ def getimage(tablebase, path):
     resp.mimetype = "image/jpeg"
     return resp
 
-@app.route("/deleteimage/<tablebase>/<path>")
+@app.route("/deleteimage/<tablebase>/<path>", methods=['DELETE'])
 def deleteimage(tablebase, path):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
@@ -285,6 +285,49 @@ def getConfig(name):
     path = os.path.join("config", name)
     with open(path, "r", encoding="UTF-8") as jsonFile:
         return json.load(jsonFile)
+
+
+@app.route("/markercodes/<tablebase>")
+def getMarkerCodes(tablebase):
+    path = os.path.join("markercodes", tablebase)
+    if not os.path.exists(path):
+        return jsonify([])
+    filenames = sorted(os.listdir(path))
+    filenames = [ filename[0:-5] for filename in filenames if filename.endswith(".json")]
+    return jsonify(filenames)
+
+
+@app.route("/markercode/<tablebase>/<name>")
+def getMarkerCode(tablebase, name):
+    path = os.path.join("markercodes", tablebase, name + ".json")
+    with open(path, "r", encoding="UTF-8") as f:
+        codeJS = f.read()
+        return codeJS
+
+
+@app.route("/addmarkercode/<tablebase>/<name>", methods=['POST'])
+def addMarkerCode(tablebase, name):
+    clen = request.content_length
+    if clen > 2000:
+        resp = jsonify({"error": "markercode file too large"})
+        resp.status_code = 400
+        return resp
+    data = request.get_data(cache=False)
+    name = utils.normalize(name)
+    if name is None or name == "" or len(name) > 100:
+        return jsonify("Error", "invalid name:" + name)
+    path = os.path.join("markercodes", tablebase)
+    os.makedirs(path, exist_ok=True)
+    path = os.path.join(path, name + ".json")
+    with open(path, mode='wb') as markerCodeFile:
+        markerCodeFile.write(data)
+    return jsonify({"name": name})
+
+@app.route("/deletemarkercode/<tablebase>/<name>", methods=['DELETE'])
+def deletemarkercode(tablebase, name):
+    path = os.path.join("markercodes", tablebase, name + ".json")
+    os.remove(path)
+    return jsonify({})
 
 
 if __name__ == "__main__":
