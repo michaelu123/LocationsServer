@@ -1,3 +1,5 @@
+import base64
+import http
 import io
 import os
 from datetime import datetime
@@ -5,14 +7,19 @@ from decimal import Decimal
 
 import sqlalchemy
 from PIL import Image
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey, X25519PrivateKey
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.padding import PKCS7
+from cryptography.hazmat.primitives.hashes import Hash,SHA256
 from flask import Flask, request, jsonify, json, url_for, make_response
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import MetaData
 from sqlalchemy.exc import IntegrityError
 
 import config
-import utils
 import secrets
+import utils
 from mysqlCreateTables import MySqlCreateTables
 
 MAX_IMAGE_SIZE = (10 * 1024 * 1024)
@@ -39,6 +46,11 @@ print("SQLAlchemy version", sqlalchemy.__version__)
 meta = MetaData()
 meta.reflect(bind=db.engine)
 dbtables = meta.tables
+
+sharedKeys = {}
+loginDates = {}
+usernames = {}
+passwords = {}
 
 
 # for tablename in dbtables.keys():
@@ -328,6 +340,96 @@ def deletemarkercode(tablebase, name):
     path = os.path.join("markercodes", tablebase, name + ".json")
     os.remove(path)
     return jsonify({})
+
+@app.route("/kex", methods=['POST'])
+def kex():
+    clen = request.content_length
+    if clen > 1000:
+        resp = jsonify({"error": "config file too large"})
+        resp.status_code = 400
+        return resp
+    data = request.json
+    pubBytes = base64.b64decode(data["pubkey"])
+    id = data["id"]
+    his_pubkey = X25519PublicKey.from_public_bytes(pubBytes)
+    my_privkey = X25519PrivateKey.generate()
+    my_pubkey = my_privkey.public_key()
+    sharedkey = my_privkey.exchange(his_pubkey)
+    sharedKeys[id] = sharedkey
+    print("sharedkey", base64.b64encode(sharedkey).decode("utf-8"))
+    my_pkbytes = my_pubkey.public_bytes(encoding=serialization.Encoding.Raw,
+      format=serialization.PublicFormat.Raw)
+    my_pkS = base64.b64encode(my_pkbytes).decode("utf-8")
+    return jsonify({"pubkey": my_pkS})
+
+@app.route("/test", methods=['POST'])
+def test():
+    clen = request.content_length
+    if clen > 1000:
+        resp = jsonify({"error": "config file too large"})
+        resp.status_code = 400
+        return resp
+    data = request.json
+    id = data["id"]
+    encData = base64.b64decode(data["enc"])
+    iv = base64.b64decode(data["iv"])
+    sharedkey = sharedKeys[id]
+    aesAlg = algorithms.AES(sharedkey)
+    cipher = Cipher(aesAlg, modes.CBC(iv))
+    decryptor = cipher.decryptor()
+    decData = decryptor.update(encData) + decryptor.finalize()
+    unpadder = PKCS7(128).unpadder()
+    decData = unpadder.update(decData) +unpadder.finalize()
+    decData = decData.decode("utf-8")
+    print("decData", decData)
+    return jsonify({"res": decData})
+    pass
+
+@app.route("/auth/<loginOrSignon>", methods=['POST'])
+def auth(loginOrSignon):
+    try:
+        login = loginOrSignon == "login"
+        clen = request.content_length
+        if clen > 1000:
+            resp = jsonify({"error": "req too large"})
+            resp.status_code = 400
+            return resp
+        data = request.json
+        id = data["id"]
+        encData = base64.b64decode(data["ctxt"])
+        iv = base64.b64decode(data["iv"])
+        sharedkey = sharedKeys[id]
+        aesAlg = algorithms.AES(sharedkey)
+        cipher = Cipher(aesAlg, modes.CBC(iv))
+        decryptor = cipher.decryptor()
+        decDataDec = decryptor.update(encData) + decryptor.finalize()
+        unpadder = PKCS7(128).unpadder()
+        decDataB = unpadder.update(decDataDec) +unpadder.finalize()
+        decDataS = decDataB.decode("utf-8")
+        credMsgJS = json.JSONDecoder().decode(decDataS)
+        print("cred", credMsgJS)
+        digest = Hash(SHA256())
+        concatS = credMsgJS["password"] + ":" + credMsgJS["email"]
+        concatB = concatS.encode("utf-8")
+        digest.update(concatB)
+        concatHash = digest.finalize()
+        if login:
+            username = usernames.get(concatS)
+            storedHash = passwords.get(concatS)
+            if  username is None or storedHash is None or storedHash != concatHash:
+                resp = jsonify({"Auth error"})
+                resp.status_code = http.HTTPStatus.UNAUTHORIZED
+                return resp
+        else:
+            username = credMsgJS["username"]
+            passwords[concatS] = concatHash
+            usernames[concatS] = username
+        loginDates[id] = datetime.now()
+        return jsonify({"id": id, "username": username})
+    except Exception as ex:
+        resp = jsonify({"error": str(ex)})
+        resp.status_code = 400
+        return resp
 
 
 if __name__ == "__main__":
