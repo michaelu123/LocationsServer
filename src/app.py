@@ -10,12 +10,13 @@ from PIL import Image
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey, X25519PrivateKey
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.hashes import Hash, SHA256
 from cryptography.hazmat.primitives.padding import PKCS7
-from cryptography.hazmat.primitives.hashes import Hash,SHA256
 from flask import Flask, request, jsonify, json, url_for, make_response
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import MetaData
 from sqlalchemy.exc import IntegrityError
+from functools import wraps
 
 import config
 import secrets
@@ -47,16 +48,81 @@ meta = MetaData()
 meta.reflect(bind=db.engine)
 dbtables = meta.tables
 
-sharedKeys = {}
-loginDates = {}
-usernames = {}
-passwords = {}
+id2sharedKey = {}  # id -> secretKey
+id2loginDate = {}  # id -> datetime
+id2encryptedId = {} # id -> encrypted id
+id2username = {}  # id -> username
+
+# DB:
+dbusernames1 = {}  # email -> username, replace with DB
+dbusernames2 = {}  # username -> true, replace with DB
+hashes = {}  # email -> Hash(email:password), replace with DB
 
 
 # for tablename in dbtables.keys():
 #     dbtable = dbtables[tablename]
 #     for column in dbtable.columns:
 #         print(tablename, column.name, column.type)
+
+def expiration(id):
+    loggedIn = id2loginDate[id]
+    now = datetime.now()
+    diff = (now - loggedIn).total_seconds() / (24*60*60)
+    if diff < 12:
+        return "OK"
+    if diff < 24:
+        return "SOON"
+    return None
+
+def verifyToken(token, mustBeAdmin):
+    print("token", token, mustBeAdmin)
+    if token is None:
+        return None,None
+    tokenB = base64.b64decode(token)
+    tokenS = tokenB.decode("utf-8")
+    tokenJS = json.JSONDecoder().decode(tokenS)
+    id = tokenJS["id"]
+    sharedkey = id2sharedKey.get(id)
+    if sharedkey is None:
+        return None,None
+    username = id2username.get(id)
+    if username is None:
+        return None,None
+    if mustBeAdmin and username != "admin":
+        return None,None
+    idEnc = tokenJS["idEnc"]
+    if id2encryptedId.get(id) == idEnc:
+        return expiration(id)
+    idEnc = base64.b64decode(tokenJS["idEnc"])
+    ivS = tokenJS["iv"]
+    ivB = base64.b64decode(ivS)
+    aesAlg = algorithms.AES(sharedkey)
+    cipher = Cipher(aesAlg, modes.CBC(ivB))
+    decryptor = cipher.decryptor()
+    idDecB = decryptor.update(idEnc) + decryptor.finalize()
+    unpadder = PKCS7(128).unpadder()
+    idDecB = unpadder.update(idDecB) + unpadder.finalize()
+    idDecS = idDecB.decode("utf-8")
+    if id == idDecS: # so sharedKey was working
+        id2encryptedId[id] = idEnc
+        return expiration(id), username
+    return None,None
+
+# see https://www.artima.com/weblogs/viewpost.jsp?thread=240845#decorator-functions-with-decorator-arguments
+def tokencheck(mustBeAdmin):
+    def wrap(f):
+        @wraps(f)
+        def tcdecorator(*args, **kwargs):
+            (respHdr,username) = verifyToken(request.headers.get("x-auth"), mustBeAdmin)
+            if respHdr is None:
+                resp = make_response("Auth error",  401)
+                return resp
+            resp = f(*args, **kwargs, username=username)
+            resp.headers['x-auth'] = respHdr
+            return resp
+        return tcdecorator
+    return wrap
+
 
 @app.route("/table/<tablename>")
 def table(tablename):
@@ -70,20 +136,21 @@ def table(tablename):
 
 
 @app.route("/region/<tablename>")
-def region(tablename):
+@tokencheck(False)
+def region(tablename, **kwargs):
     minlat = request.args.get("minlat")
     maxlat = request.args.get("maxlat")
     minlon = request.args.get("minlon")
     maxlon = request.args.get("maxlon")
-    region = request.args.get("region")
+    region2 = request.args.get("region")
     with db.engine.connect() as conn:
         sel = "SELECT * FROM " + tablename + \
               " WHERE lat_round <= :maxlat and lat_round >= :minlat and lon_round <= :maxlon and lon_round >= :minlon"
-        if region is not None and region != "":
+        if region2 is not None and region2 != "":
             sel += " and region = :region"
         # print(sel)
         sel = db.text(sel)
-        parms = {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon, "region": region}
+        parms = {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon, "region": region2}
         rows = conn.execute(sel, parms)
     jj = jsonify([list(row) for row in rows])
     return jj
@@ -95,10 +162,14 @@ def tables():
 
 
 @app.route("/add/<tablename>", methods=['POST'])
-def addRow(tablename):
+@tokencheck(False)
+def addRow(tablename, username = None):
     # print("addRow", tablename)
     jlist = request.json
-    # print("json", jlist)
+    print("json", jlist)
+    if username is not None and username != "admin":
+        for row in jlist:
+            row["creator"] = username
     dbtable = dbtables[tablename]
     ins = dbtable.insert()
     with db.engine.connect() as conn:
@@ -155,17 +226,19 @@ def addRow(tablename):
                     continue
                 else:
                     print("addRow exception", e)
-                    raise (e)
+                    raise e
         print("rows inserted into " + tablename + ": " + str(r.rowcount))
-        return jsonify({tablename: r.rowcount, "rowid": r.lastrowid })
+        resp = jsonify({tablename: r.rowcount, "rowid": r.lastrowid})
+        return resp
+
 
 @app.route("/official/<tablename>", methods=['POST'])
-def official(tablename):
+@tokencheck(True)
+def official(tablename, **kwargs):
     print("official", tablename)
     jrow = request.json
     print("json", jrow)
     dbtable = dbtables[tablename]
-    ins = dbtable.insert()
     with db.engine.begin() as conn:
         lat_round = jrow["lat_round"]
         lon_round = jrow["lon_round"]
@@ -179,23 +252,26 @@ def official(tablename):
         print("official inserted " + str(r.rowcount))
     return jsonify({tablename: r.rowcount})
 
+
 @app.route("/deleteloc/<tablebase>", methods=['DELETE'])
-def deleteloc(tablebase):
+@tokencheck(True)
+def deleteloc(tablebase, **kwargs):
     res = {}
     hasZusatz = request.args.get("haszusatz") == "true"
     lat_round = request.args.get("lat")
     lon_round = request.args.get("lon")
-    tables = ["daten", "images"]
+    tables2 = ["daten", "images"]
     if hasZusatz:
-        tables.append("zusatz")
+        tables2.append("zusatz")
     with db.engine.begin() as conn:
-        for table in tables:
-            delStmt = db.text("DELETE FROM " + tablebase + "_" + table +
-                          " WHERE lat_round = :lat_round and lon_round = :lon_round")
+        for table2 in tables2:
+            delStmt = db.text("DELETE FROM " + tablebase + "_" + table2 +
+                              " WHERE lat_round = :lat_round and lon_round = :lon_round")
             parms = {"lat_round": lat_round, "lon_round": lon_round}
             r = conn.execute(delStmt, parms)
-            res[table] = r.rowcount
+            res[table2] = r.rowcount
     return jsonify(res)
+
 
 @app.route("/getimage/<tablebase>/<path>")
 def getimage(tablebase, path):
@@ -224,8 +300,10 @@ def getimage(tablebase, path):
     resp.mimetype = "image/jpeg"
     return resp
 
+
 @app.route("/deleteimage/<tablebase>/<path>", methods=['DELETE'])
-def deleteimage(tablebase, path):
+@tokencheck(True)
+def deleteimage(tablebase, path, **kwargs):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
     datum = path.split("_")[2]  # 20200708
@@ -238,7 +316,8 @@ def deleteimage(tablebase, path):
 
 
 @app.route("/addimage/<tablebase>/<imgname>", methods=['POST'])
-def addimage(tablebase, imgname):
+@tokencheck(False)
+def addimage(tablebase, imgname, **kwargs):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
     clen = request.content_length
@@ -261,7 +340,8 @@ def addimage(tablebase, imgname):
 
 
 @app.route("/addconfig", methods=['POST'])
-def addconfig():
+@tokencheck(True)
+def addconfig(**kwargs):
     clen = request.content_length
     if clen > MAX_CONFIG_SIZE:
         resp = jsonify({"error": "config file too large"})
@@ -274,13 +354,13 @@ def addconfig():
         return jsonify("Error", baseConfig.errors)
     name = utils.normalize(confJS["name"])
     if name is None or name == "" or len(name) > 100:
-        return jsonify("Error", "invalid name:" + name)
+        return jsonify("Error", "invalid name:" + str(name))
     nameVers = name + "_" + str(confJS["version"])
     path = os.path.join("config", nameVers + ".json")
     if os.path.exists(path):
         return jsonify("Error", "File " + os.path.abspath(path) + " already exists")
-    db = MySqlCreateTables()
-    db.updateDB(confJS, baseConfig.getBaseVersions(name))
+    db2 = MySqlCreateTables()
+    db2.updateDB(confJS, baseConfig.getBaseVersions(name))
     with open(path, mode='wb') as configFile:
         configFile.write(data)
     baseConfig.addConfig(confJS)
@@ -305,7 +385,7 @@ def getMarkerCodes(tablebase):
     if not os.path.exists(path):
         return jsonify([])
     filenames = sorted(os.listdir(path))
-    filenames = [ filename[0:-5] for filename in filenames if filename.endswith(".json")]
+    filenames = [filename[0:-5] for filename in filenames if filename.endswith(".json")]
     return jsonify(filenames)
 
 
@@ -318,7 +398,8 @@ def getMarkerCode(tablebase, name):
 
 
 @app.route("/addmarkercode/<tablebase>/<name>", methods=['POST'])
-def addMarkerCode(tablebase, name):
+@tokencheck(True)
+def addMarkerCode(tablebase, name, **kwargs):
     clen = request.content_length
     if clen > 2000:
         resp = jsonify({"error": "markercode file too large"})
@@ -327,7 +408,7 @@ def addMarkerCode(tablebase, name):
     data = request.get_data(cache=False)
     name = utils.normalize(name)
     if name is None or name == "" or len(name) > 100:
-        return jsonify("Error", "invalid name:" + name)
+        return jsonify("Error", "invalid name:" + str(name))
     path = os.path.join("markercodes", tablebase)
     os.makedirs(path, exist_ok=True)
     path = os.path.join(path, name + ".json")
@@ -335,11 +416,14 @@ def addMarkerCode(tablebase, name):
         markerCodeFile.write(data)
     return jsonify({"name": name})
 
+
 @app.route("/deletemarkercode/<tablebase>/<name>", methods=['DELETE'])
-def deletemarkercode(tablebase, name):
+@tokencheck(True)
+def deletemarkercode(tablebase, name, **kwargs):
     path = os.path.join("markercodes", tablebase, name + ".json")
     os.remove(path)
     return jsonify({})
+
 
 @app.route("/kex", methods=['POST'])
 def kex():
@@ -350,17 +434,18 @@ def kex():
         return resp
     data = request.json
     pubBytes = base64.b64decode(data["pubkey"])
-    id = data["id"]
+    id2 = data["id"]
     his_pubkey = X25519PublicKey.from_public_bytes(pubBytes)
     my_privkey = X25519PrivateKey.generate()
     my_pubkey = my_privkey.public_key()
     sharedkey = my_privkey.exchange(his_pubkey)
-    sharedKeys[id] = sharedkey
+    id2sharedKey[id2] = sharedkey
     print("sharedkey", base64.b64encode(sharedkey).decode("utf-8"))
     my_pkbytes = my_pubkey.public_bytes(encoding=serialization.Encoding.Raw,
-      format=serialization.PublicFormat.Raw)
+                                        format=serialization.PublicFormat.Raw)
     my_pkS = base64.b64encode(my_pkbytes).decode("utf-8")
     return jsonify({"pubkey": my_pkS})
+
 
 @app.route("/test", methods=['POST'])
 def test():
@@ -370,20 +455,37 @@ def test():
         resp.status_code = 400
         return resp
     data = request.json
-    id = data["id"]
+    id2 = data["id"]
     encData = base64.b64decode(data["enc"])
     iv = base64.b64decode(data["iv"])
-    sharedkey = sharedKeys[id]
+    sharedkey = id2sharedKey[id2]
     aesAlg = algorithms.AES(sharedkey)
     cipher = Cipher(aesAlg, modes.CBC(iv))
     decryptor = cipher.decryptor()
     decData = decryptor.update(encData) + decryptor.finalize()
     unpadder = PKCS7(128).unpadder()
-    decData = unpadder.update(decData) +unpadder.finalize()
+    decData = unpadder.update(decData) + unpadder.finalize()
     decData = decData.decode("utf-8")
     print("decData", decData)
     return jsonify({"res": decData})
     pass
+
+
+def userFromDB(emailS):
+    username = dbusernames1.get(emailS)
+    storedHash = hashes.get(emailS)
+    return username, storedHash
+
+
+def userToDB(emailS, username, storedHash):
+    dbusernames1[emailS] = username
+    hashes[emailS] = storedHash
+    dbusernames2[username] = True
+
+
+def dbContainsUsername(username):
+    return dbusernames2.get(username) is not None
+
 
 @app.route("/auth/<loginOrSignon>", methods=['POST'])
 def auth(loginOrSignon):
@@ -395,37 +497,50 @@ def auth(loginOrSignon):
             resp.status_code = 400
             return resp
         data = request.json
-        id = data["id"]
+        id2 = data["id"]
         encData = base64.b64decode(data["ctxt"])
         iv = base64.b64decode(data["iv"])
-        sharedkey = sharedKeys[id]
+        sharedkey = id2sharedKey[id2]
         aesAlg = algorithms.AES(sharedkey)
         cipher = Cipher(aesAlg, modes.CBC(iv))
         decryptor = cipher.decryptor()
         decDataDec = decryptor.update(encData) + decryptor.finalize()
         unpadder = PKCS7(128).unpadder()
-        decDataB = unpadder.update(decDataDec) +unpadder.finalize()
+        decDataB = unpadder.update(decDataDec) + unpadder.finalize()
         decDataS = decDataB.decode("utf-8")
         credMsgJS = json.JSONDecoder().decode(decDataS)
         print("cred", credMsgJS)
         digest = Hash(SHA256())
-        concatS = credMsgJS["password"] + ":" + credMsgJS["email"]
+        emailS = credMsgJS["email"]
+        concatS = credMsgJS["password"] + ":" + emailS
         concatB = concatS.encode("utf-8")
         digest.update(concatB)
         concatHash = digest.finalize()
-        if login:
-            username = usernames.get(concatS)
-            storedHash = passwords.get(concatS)
-            if  username is None or storedHash is None or storedHash != concatHash:
-                resp = jsonify({"Auth error"})
+
+        (username, storedHash) = userFromDB(emailS)
+        if storedHash is None or storedHash != concatHash:
+            if login:
+                resp = jsonify({"Auth error": "unknown user or bad password"})
                 resp.status_code = http.HTTPStatus.UNAUTHORIZED
                 return resp
+            else:
+                username2 = credMsgJS["username"]
+                if dbContainsUsername(username2):
+                    resp = jsonify({"Auth error": "user name already in use"})
+                    resp.status_code = http.HTTPStatus.UNAUTHORIZED
+                    return resp
+                userToDB(emailS, username2, concatHash)
+                username = username2
         else:
-            username = credMsgJS["username"]
-            passwords[concatS] = concatHash
-            usernames[concatS] = username
-        loginDates[id] = datetime.now()
-        return jsonify({"id": id, "username": username})
+            if not login:
+                username2 = credMsgJS["username"]
+                if username != username2:
+                    resp = jsonify({"Auth error": "user name can not be changed"})
+                    resp.status_code = http.HTTPStatus.UNAUTHORIZED
+                    return resp
+        id2loginDate[id2] = datetime.now()
+        id2username[id2] = username
+        return jsonify({"id": id2, "username": username})
     except Exception as ex:
         resp = jsonify({"error": str(ex)})
         resp.status_code = 400
