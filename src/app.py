@@ -4,6 +4,7 @@ import io
 import os
 from datetime import datetime
 from decimal import Decimal
+from functools import wraps
 
 import sqlalchemy
 from PIL import Image
@@ -16,7 +17,6 @@ from flask import Flask, request, jsonify, json, url_for, make_response
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import MetaData
 from sqlalchemy.exc import IntegrityError
-from functools import wraps
 
 import config
 import secrets
@@ -50,49 +50,47 @@ dbtables = meta.tables
 
 id2sharedKey = {}  # id -> secretKey
 id2loginDate = {}  # id -> datetime
-id2encryptedId = {} # id -> encrypted id
+id2encryptedId = {}  # id -> encrypted id
 id2username = {}  # id -> username
-
-# DB:
-dbusernames1 = {}  # email -> username, replace with DB
-dbusernames2 = {}  # username -> true, replace with DB
-hashes = {}  # email -> Hash(email:password), replace with DB
-
 
 # for tablename in dbtables.keys():
 #     dbtable = dbtables[tablename]
 #     for column in dbtable.columns:
 #         print(tablename, column.name, column.type)
 
-def expiration(id):
-    loggedIn = id2loginDate[id]
+def expiration(id2):
+    loggedIn = id2loginDate[id2]
     now = datetime.now()
-    diff = (now - loggedIn).total_seconds() / (24*60*60)
+    diff = int((now - loggedIn).total_seconds())
+    # print("diff", diff) # test exoiration
+    # if diff % 5 == 0:
+    #     return "SOON"
+    diff = diff / (24 * 60 * 60)
     if diff < 12:
         return "OK"
     if diff < 24:
         return "SOON"
     return None
 
+
 def verifyToken(token, mustBeAdmin):
-    print("token", token, mustBeAdmin)
     if token is None:
-        return None,None
+        return None, None
     tokenB = base64.b64decode(token)
     tokenS = tokenB.decode("utf-8")
     tokenJS = json.JSONDecoder().decode(tokenS)
-    id = tokenJS["id"]
-    sharedkey = id2sharedKey.get(id)
+    id2 = tokenJS["id"]
+    sharedkey = id2sharedKey.get(id2)
     if sharedkey is None:
-        return None,None
-    username = id2username.get(id)
+        return None, None
+    username = id2username.get(id2)
     if username is None:
-        return None,None
+        return None, None
     if mustBeAdmin and username != "admin":
-        return None,None
+        return None, None
     idEnc = tokenJS["idEnc"]
     if id2encryptedId.get(id) == idEnc:
-        return expiration(id)
+        return expiration(id2)
     idEnc = base64.b64decode(tokenJS["idEnc"])
     ivS = tokenJS["iv"]
     ivB = base64.b64decode(ivS)
@@ -103,24 +101,27 @@ def verifyToken(token, mustBeAdmin):
     unpadder = PKCS7(128).unpadder()
     idDecB = unpadder.update(idDecB) + unpadder.finalize()
     idDecS = idDecB.decode("utf-8")
-    if id == idDecS: # so sharedKey was working
-        id2encryptedId[id] = idEnc
-        return expiration(id), username
-    return None,None
+    if id2 == idDecS:  # so sharedKey was working
+        id2encryptedId[id2] = idEnc
+        return expiration(id2), username
+    return None, None
+
 
 # see https://www.artima.com/weblogs/viewpost.jsp?thread=240845#decorator-functions-with-decorator-arguments
 def tokencheck(mustBeAdmin):
     def wrap(f):
         @wraps(f)
         def tcdecorator(*args, **kwargs):
-            (respHdr,username) = verifyToken(request.headers.get("x-auth"), mustBeAdmin)
+            (respHdr, username) = verifyToken(request.headers.get("x-auth"), mustBeAdmin)
             if respHdr is None:
-                resp = make_response("Auth error",  401)
+                resp = make_response("Auth error", 401)
                 return resp
             resp = f(*args, **kwargs, username=username)
             resp.headers['x-auth'] = respHdr
             return resp
+
         return tcdecorator
+
     return wrap
 
 
@@ -137,7 +138,7 @@ def table(tablename):
 
 @app.route("/region/<tablename>")
 @tokencheck(False)
-def region(tablename, **kwargs):
+def region(tablename, **_):
     minlat = request.args.get("minlat")
     maxlat = request.args.get("maxlat")
     minlon = request.args.get("minlon")
@@ -163,10 +164,9 @@ def tables():
 
 @app.route("/add/<tablename>", methods=['POST'])
 @tokencheck(False)
-def addRow(tablename, username = None):
+def addRow(tablename, username=None):
     # print("addRow", tablename)
     jlist = request.json
-    print("json", jlist)
     if username is not None and username != "admin":
         for row in jlist:
             row["creator"] = username
@@ -234,10 +234,8 @@ def addRow(tablename, username = None):
 
 @app.route("/official/<tablename>", methods=['POST'])
 @tokencheck(True)
-def official(tablename, **kwargs):
-    print("official", tablename)
+def official(tablename, **_):
     jrow = request.json
-    print("json", jrow)
     dbtable = dbtables[tablename]
     with db.engine.begin() as conn:
         lat_round = jrow["lat_round"]
@@ -255,7 +253,7 @@ def official(tablename, **kwargs):
 
 @app.route("/deleteloc/<tablebase>", methods=['DELETE'])
 @tokencheck(True)
-def deleteloc(tablebase, **kwargs):
+def deleteloc(tablebase, **_):
     res = {}
     hasZusatz = request.args.get("haszusatz") == "true"
     lat_round = request.args.get("lat")
@@ -303,7 +301,7 @@ def getimage(tablebase, path):
 
 @app.route("/deleteimage/<tablebase>/<path>", methods=['DELETE'])
 @tokencheck(True)
-def deleteimage(tablebase, path, **kwargs):
+def deleteimage(tablebase, path, **_):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
     datum = path.split("_")[2]  # 20200708
@@ -317,7 +315,7 @@ def deleteimage(tablebase, path, **kwargs):
 
 @app.route("/addimage/<tablebase>/<imgname>", methods=['POST'])
 @tokencheck(False)
-def addimage(tablebase, imgname, **kwargs):
+def addimage(tablebase, imgname, **_):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
     clen = request.content_length
@@ -341,7 +339,7 @@ def addimage(tablebase, imgname, **kwargs):
 
 @app.route("/addconfig", methods=['POST'])
 @tokencheck(True)
-def addconfig(**kwargs):
+def addconfig(**_):
     clen = request.content_length
     if clen > MAX_CONFIG_SIZE:
         resp = jsonify({"error": "config file too large"})
@@ -399,7 +397,7 @@ def getMarkerCode(tablebase, name):
 
 @app.route("/addmarkercode/<tablebase>/<name>", methods=['POST'])
 @tokencheck(True)
-def addMarkerCode(tablebase, name, **kwargs):
+def addMarkerCode(tablebase, name, **_):
     clen = request.content_length
     if clen > 2000:
         resp = jsonify({"error": "markercode file too large"})
@@ -419,14 +417,14 @@ def addMarkerCode(tablebase, name, **kwargs):
 
 @app.route("/deletemarkercode/<tablebase>/<name>", methods=['DELETE'])
 @tokencheck(True)
-def deletemarkercode(tablebase, name, **kwargs):
+def deletemarkercode(tablebase, name, **_):
     path = os.path.join("markercodes", tablebase, name + ".json")
     os.remove(path)
     return jsonify({})
 
 
 @app.route("/kex", methods=['POST'])
-def kex():
+def kex(): # Diffie Hellman key exchange X25519
     clen = request.content_length
     if clen > 1000:
         resp = jsonify({"error": "config file too large"})
@@ -440,7 +438,6 @@ def kex():
     my_pubkey = my_privkey.public_key()
     sharedkey = my_privkey.exchange(his_pubkey)
     id2sharedKey[id2] = sharedkey
-    print("sharedkey", base64.b64encode(sharedkey).decode("utf-8"))
     my_pkbytes = my_pubkey.public_bytes(encoding=serialization.Encoding.Raw,
                                         format=serialization.PublicFormat.Raw)
     my_pkS = base64.b64encode(my_pkbytes).decode("utf-8")
@@ -466,25 +463,41 @@ def test():
     unpadder = PKCS7(128).unpadder()
     decData = unpadder.update(decData) + unpadder.finalize()
     decData = decData.decode("utf-8")
-    print("decData", decData)
     return jsonify({"res": decData})
     pass
 
 
 def userFromDB(emailS):
-    username = dbusernames1.get(emailS)
-    storedHash = hashes.get(emailS)
-    return username, storedHash
+    with db.engine.connect() as conn:
+        sel = "SELECT username, encpw FROM users WHERE email = :email"
+        sel = db.text(sel)
+        parms = {"email": emailS}
+        res = conn.execute(sel, parms)
+        if res.rowcount != 1:
+            return None,None
+        row = res.fetchone()
+        username = row[0]
+        encPWS = row[1]
+        encPWB = base64.b64decode(encPWS)
+        return username, encPWB
 
 
 def userToDB(emailS, username, storedHash):
-    dbusernames1[emailS] = username
-    hashes[emailS] = storedHash
-    dbusernames2[username] = True
+    encPWS = base64.b64encode(storedHash).decode("utf-8")
+    with db.engine.connect() as conn:
+        ins = "INSERT into users(email, username, encpw) VALUES(:email, :username, :encpw)"
+        ins = db.text(ins)
+        parms = {"email": emailS, "username": username, "encpw": encPWS}
+        conn.execute(ins, parms)
 
 
 def dbContainsUsername(username):
-    return dbusernames2.get(username) is not None
+    with db.engine.connect() as conn:
+        sel = "SELECT username FROM users WHERE username = :username"
+        sel = db.text(sel)
+        parms = {"username": username}
+        res = conn.execute(sel, parms)
+        return res.rowcount > 0
 
 
 @app.route("/auth/<loginOrSignon>", methods=['POST'])
@@ -509,7 +522,6 @@ def auth(loginOrSignon):
         decDataB = unpadder.update(decDataDec) + unpadder.finalize()
         decDataS = decDataB.decode("utf-8")
         credMsgJS = json.JSONDecoder().decode(decDataS)
-        print("cred", credMsgJS)
         digest = Hash(SHA256())
         emailS = credMsgJS["email"]
         concatS = credMsgJS["password"] + ":" + emailS
@@ -543,7 +555,7 @@ def auth(loginOrSignon):
         return jsonify({"id": id2, "username": username})
     except Exception as ex:
         resp = jsonify({"error": str(ex)})
-        resp.status_code = 400
+        resp.status_code = 401
         return resp
 
 
