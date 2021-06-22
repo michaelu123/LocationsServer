@@ -19,6 +19,7 @@ from sqlalchemy import MetaData
 from sqlalchemy.exc import IntegrityError
 
 import config
+import fb
 import secrets
 import utils
 from mysqlCreateTables import MySqlCreateTables
@@ -47,11 +48,13 @@ print("SQLAlchemy version", sqlalchemy.__version__)
 meta = MetaData()
 meta.reflect(bind=db.engine)
 dbtables = meta.tables
+fb.init(app)
 
 id2sharedKey = {}  # id -> secretKey
 id2loginDate = {}  # id -> datetime
 id2encryptedId = {}  # id -> encrypted id
 id2username = {}  # id -> username
+
 
 # for tablename in dbtables.keys():
 #     dbtable = dbtables[tablename]
@@ -123,6 +126,12 @@ def tokencheck(mustBeAdmin):
         return tcdecorator
 
     return wrap
+
+
+@app.route("/checktoken")
+@tokencheck(False)
+def checkToken(**_):  # check if token is still valid
+    return jsonify({"token":"ok"})
 
 
 @app.route("/table/<tablename>")
@@ -253,7 +262,7 @@ def official(tablename, **_):
 
 @app.route("/deleteloc/<tablebase>", methods=['DELETE'])
 @tokencheck(True)
-def deleteloc(tablebase, **_):
+def deleteLoc(tablebase, **_):
     res = {}
     hasZusatz = request.args.get("haszusatz") == "true"
     lat_round = request.args.get("lat")
@@ -272,7 +281,7 @@ def deleteloc(tablebase, **_):
 
 
 @app.route("/getimage/<tablebase>/<path>")
-def getimage(tablebase, path):
+def getImage(tablebase, path):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
     maxdim = request.args.get("maxdim")
@@ -301,7 +310,7 @@ def getimage(tablebase, path):
 
 @app.route("/deleteimage/<tablebase>/<path>", methods=['DELETE'])
 @tokencheck(True)
-def deleteimage(tablebase, path, **_):
+def deleteImage(tablebase, path, **_):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
     datum = path.split("_")[2]  # 20200708
@@ -315,14 +324,9 @@ def deleteimage(tablebase, path, **_):
 
 @app.route("/addimage/<tablebase>/<imgname>", methods=['POST'])
 @tokencheck(False)
-def addimage(tablebase, imgname, **_):
+def addImage(tablebase, imgname, **_):
     if tablebase.endswith("_images"):
         tablebase = tablebase[0:-7]
-    clen = request.content_length
-    if clen > MAX_IMAGE_SIZE:
-        resp = jsonify({"error": "image too large"})
-        resp.status_code = 400
-        return resp
     datum = imgname.split("_")[2]  # 20200708
     yr = datum[0:4]
     mo = datum[4:6]
@@ -339,12 +343,7 @@ def addimage(tablebase, imgname, **_):
 
 @app.route("/addconfig", methods=['POST'])
 @tokencheck(True)
-def addconfig(**_):
-    clen = request.content_length
-    if clen > MAX_CONFIG_SIZE:
-        resp = jsonify({"error": "config file too large"})
-        resp.status_code = 400
-        return resp
+def addConfig(**_):
     baseConfig = config.Config()
     data = request.get_data(cache=False)
     confJS = baseConfig.checkConfig(io.BytesIO(data))
@@ -398,11 +397,6 @@ def getMarkerCode(tablebase, name):
 @app.route("/addmarkercode/<tablebase>/<name>", methods=['POST'])
 @tokencheck(True)
 def addMarkerCode(tablebase, name, **_):
-    clen = request.content_length
-    if clen > 2000:
-        resp = jsonify({"error": "markercode file too large"})
-        resp.status_code = 400
-        return resp
     data = request.get_data(cache=False)
     name = utils.normalize(name)
     if name is None or name == "" or len(name) > 100:
@@ -417,19 +411,14 @@ def addMarkerCode(tablebase, name, **_):
 
 @app.route("/deletemarkercode/<tablebase>/<name>", methods=['DELETE'])
 @tokencheck(True)
-def deletemarkercode(tablebase, name, **_):
+def deleteMarkerCode(tablebase, name, **_):
     path = os.path.join("markercodes", tablebase, name + ".json")
     os.remove(path)
     return jsonify({})
 
 
 @app.route("/kex", methods=['POST'])
-def kex(): # Diffie Hellman key exchange X25519
-    clen = request.content_length
-    if clen > 1000:
-        resp = jsonify({"error": "config file too large"})
-        resp.status_code = 400
-        return resp
+def kex():  # Diffie Hellman key exchange X25519
     data = request.json
     pubBytes = base64.b64decode(data["pubkey"])
     id2 = data["id"]
@@ -446,11 +435,6 @@ def kex(): # Diffie Hellman key exchange X25519
 
 @app.route("/test", methods=['POST'])
 def test():
-    clen = request.content_length
-    if clen > 1000:
-        resp = jsonify({"error": "config file too large"})
-        resp.status_code = 400
-        return resp
     data = request.json
     id2 = data["id"]
     encData = base64.b64decode(data["enc"])
@@ -474,7 +458,7 @@ def userFromDB(emailS):
         parms = {"email": emailS}
         res = conn.execute(sel, parms)
         if res.rowcount != 1:
-            return None,None
+            return None, None
         row = res.fetchone()
         username = row[0]
         encPWS = row[1]
@@ -504,11 +488,6 @@ def dbContainsUsername(username):
 def auth(loginOrSignon):
     try:
         login = loginOrSignon == "login"
-        clen = request.content_length
-        if clen > 1000:
-            resp = jsonify({"error": "req too large"})
-            resp.status_code = 400
-            return resp
         data = request.json
         id2 = data["id"]
         encData = base64.b64decode(data["ctxt"])
