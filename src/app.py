@@ -52,7 +52,6 @@ fb.init(app)
 
 id2sharedKey = {}  # id -> secretKey
 id2loginDate = {}  # id -> datetime
-id2encryptedId = {}  # id -> encrypted id
 id2username = {}  # id -> username
 
 
@@ -83,6 +82,7 @@ def verifyToken(token, mustBeAdmin):
     tokenS = tokenB.decode("utf-8")
     tokenJS = json.JSONDecoder().decode(tokenS)
     id2 = tokenJS["id"]
+    nowS = tokenJS["now"]
     sharedkey = id2sharedKey.get(id2)
     if sharedkey is None:
         return None, None
@@ -91,21 +91,22 @@ def verifyToken(token, mustBeAdmin):
         return None, None
     if mustBeAdmin and username != "admin":
         return None, None
-    idEnc = tokenJS["idEnc"]
-    if id2encryptedId.get(id) == idEnc:
-        return expiration(id2)
-    idEnc = base64.b64decode(tokenJS["idEnc"])
+    nowEnc = base64.b64decode(tokenJS["nowEnc"])
     ivS = tokenJS["iv"]
     ivB = base64.b64decode(ivS)
     aesAlg = algorithms.AES(sharedkey)
     cipher = Cipher(aesAlg, modes.CBC(ivB))
     decryptor = cipher.decryptor()
-    idDecB = decryptor.update(idEnc) + decryptor.finalize()
+    nowDecB = decryptor.update(nowEnc) + decryptor.finalize()
     unpadder = PKCS7(128).unpadder()
-    idDecB = unpadder.update(idDecB) + unpadder.finalize()
-    idDecS = idDecB.decode("utf-8")
-    if id2 == idDecS:  # so sharedKey was working
-        id2encryptedId[id2] = idEnc
+    nowDecB = unpadder.update(nowDecB) + unpadder.finalize()
+    nowDecS = nowDecB.decode("utf-8")
+    if nowS != nowDecS:  # so sharedKey was not working
+        return None, None
+    now = datetime.utcnow()
+    clntNow = datetime.utcfromtimestamp(int(nowS) / 1000)
+    diff = int((now - clntNow).total_seconds())
+    if -600 < diff < 600: # clntNow within 10 minutes before or after now
         return expiration(id2), username
     return None, None
 
